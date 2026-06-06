@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import pkg from 'pg';
-import * as dns from 'dns';
 
 const { Pool } = pkg;
 
@@ -9,45 +8,26 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const connectionString = process.env.DATABASE_URL;
+const DATABASE_URL = process.env.DATABASE_URL;
 
-if (!connectionString) {
+if (!DATABASE_URL) {
   console.error('FATAL: DATABASE_URL environment variable is not set');
   process.exit(1);
 }
 
-let pool;
+const url = new URL(DATABASE_URL);
+const projectRef = url.hostname.replace('db.', '').replace('.supabase.co', '');
+const password = url.password;
 
-function initPool() {
-  return new Promise((resolve, reject) => {
-    const url = new URL(connectionString);
-    const originalHost = url.hostname;
+const poolerUrl = 'postgresql://postgres.' + projectRef + ':' + password + '@aws-0-us-east-1.pooler.supabase.com:6543/postgres';
 
-    dns.resolve4(originalHost, (err, addresses) => {
-      if (err) {
-        console.error('DNS resolution failed:', err.message);
-        reject(err);
-        return;
-      }
-
-      const ip = addresses[0];
-      pool = new Pool({
-        host: ip,
-        port: 6543,
-        database: url.pathname.replace('/', ''),
-        user: url.username,
-        password: url.password,
-        ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 15000
-      });
-
-      resolve();
-    });
-  });
-}
+const pool = new Pool({
+  connectionString: poolerUrl,
+  ssl: { rejectUnauthorized: false },
+  connectionTimeoutMillis: 15000
+});
 
 async function initDB() {
-  await initPool();
   const client = await pool.connect();
   await client.query(`
     CREATE TABLE IF NOT EXISTS leaderboard (
@@ -82,6 +62,7 @@ app.get('/api/leaderboard', async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
+    console.error('Leaderboard query failed:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -146,6 +127,7 @@ app.post('/api/save', async (req, res) => {
     if (err.code === '23505') {
       return res.status(409).json({ error: 'Name already taken. Choose a different name.' });
     }
+    console.error('Save failed:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -153,9 +135,8 @@ app.post('/api/save', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Server running on port ' + PORT);
-});
-
-initDB().catch(err => {
-  console.error('Database init failed:', err.message);
-  process.exit(1);
+  initDB().catch(err => {
+    console.error('Database init failed:', err.message);
+    process.exit(1);
+  });
 });
