@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import pkg from 'pg';
+import * as dns from 'dns';
 
 const { Pool } = pkg;
 
@@ -10,34 +11,43 @@ app.use(express.json());
 
 const connectionString = process.env.DATABASE_URL;
 
-let pool;
-
-function createPool() {
-  if (connectionString && connectionString.includes('supabase.co')) {
-    const url = new URL(connectionString);
-    const host = url.hostname;
-    pool = new Pool({
-      host: host,
-      port: parseInt(url.port) || 5432,
-      database: url.pathname.replace('/', ''),
-      user: url.username,
-      password: url.password,
-      ssl: { rejectUnauthorized: false },
-      family: 4,
-      connectionTimeoutMillis: 10000
-    });
-  } else {
-    pool = new Pool({
-      connectionString: connectionString,
-      ssl: { rejectUnauthorized: false },
-      connectionTimeoutMillis: 10000
-    });
-  }
+if (!connectionString) {
+  console.error('FATAL: DATABASE_URL environment variable is not set');
+  process.exit(1);
 }
 
-createPool();
+let pool;
+
+function initPool() {
+  return new Promise((resolve, reject) => {
+    const url = new URL(connectionString);
+    const originalHost = url.hostname;
+
+    dns.resolve4(originalHost, (err, addresses) => {
+      if (err) {
+        console.error('DNS resolution failed:', err.message);
+        reject(err);
+        return;
+      }
+
+      const ip = addresses[0];
+      pool = new Pool({
+        host: ip,
+        port: 6543,
+        database: url.pathname.replace('/', ''),
+        user: url.username,
+        password: url.password,
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 15000
+      });
+
+      resolve();
+    });
+  });
+}
 
 async function initDB() {
+  await initPool();
   const client = await pool.connect();
   await client.query(`
     CREATE TABLE IF NOT EXISTS leaderboard (
@@ -51,26 +61,23 @@ async function initDB() {
     );
   `);
   await client.query(`
-    CREATE INDEX IF NOT EXISTS idx_leaderboard_score 
+    CREATE INDEX IF NOT EXISTS idx_leaderboard_score
     ON leaderboard (money DESC, correct DESC, wrong ASC);
   `);
   client.release();
+  console.log('Database initialized successfully');
 }
 
 app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'MoneyWise API is running' });
 });
 
-initDB().catch(err => {
-  console.error('Database init failed:', err.message);
-});
-
 app.get('/api/leaderboard', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT name, money, correct, wrong 
-       FROM leaderboard 
-       ORDER BY money DESC, correct DESC, wrong ASC 
+      `SELECT name, money, correct, wrong
+       FROM leaderboard
+       ORDER BY money DESC, correct DESC, wrong ASC
        LIMIT 10`
     );
     res.json(result.rows);
@@ -114,12 +121,12 @@ app.post('/api/save', async (req, res) => {
 
     if (dupCheck.rows.length > 0) {
       const prev = dupCheck.rows[0];
-      if (money > prev.money || 
+      if (money > prev.money ||
           (money === prev.money && correct > prev.correct) ||
           (money === prev.money && correct === prev.correct && wrong < prev.wrong)) {
         await pool.query(
-          `UPDATE leaderboard 
-           SET money = $1, correct = $2, wrong = $3, session = $4, created_at = NOW() 
+          `UPDATE leaderboard
+           SET money = $1, correct = $2, wrong = $3, session = $4, created_at = NOW()
            WHERE id = $5`,
           [money, correct, wrong, session, prev.id]
         );
@@ -129,7 +136,7 @@ app.post('/api/save', async (req, res) => {
     }
 
     await pool.query(
-      `INSERT INTO leaderboard (name, money, correct, wrong, session) 
+      `INSERT INTO leaderboard (name, money, correct, wrong, session)
        VALUES ($1, $2, $3, $4, $5)`,
       [name, money, correct, wrong, session]
     );
@@ -146,4 +153,9 @@ app.post('/api/save', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('Server running on port ' + PORT);
+});
+
+initDB().catch(err => {
+  console.error('Database init failed:', err.message);
+  process.exit(1);
 });
