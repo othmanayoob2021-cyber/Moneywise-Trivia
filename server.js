@@ -8,10 +8,34 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+const connectionString = process.env.DATABASE_URL;
+
+let pool;
+
+function createPool() {
+  if (connectionString && connectionString.includes('supabase.co')) {
+    const url = new URL(connectionString);
+    const host = url.hostname;
+    pool = new Pool({
+      host: host,
+      port: parseInt(url.port) || 5432,
+      database: url.pathname.replace('/', ''),
+      user: url.username,
+      password: url.password,
+      ssl: { rejectUnauthorized: false },
+      family: 4,
+      connectionTimeoutMillis: 10000
+    });
+  } else {
+    pool = new Pool({
+      connectionString: connectionString,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 10000
+    });
+  }
+}
+
+createPool();
 
 async function initDB() {
   const client = await pool.connect();
@@ -33,7 +57,13 @@ async function initDB() {
   client.release();
 }
 
-initDB().catch(console.error);
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'MoneyWise API is running' });
+});
+
+initDB().catch(err => {
+  console.error('Database init failed:', err.message);
+});
 
 app.get('/api/leaderboard', async (req, res) => {
   try {
