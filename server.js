@@ -15,14 +15,8 @@ if (!DATABASE_URL) {
   process.exit(1);
 }
 
-const url = new URL(DATABASE_URL);
-const projectRef = url.hostname.replace('db.', '').replace('.supabase.co', '');
-const password = url.password;
-
-const poolerUrl = 'postgresql://postgres.' + projectRef + ':' + password + '@aws-0-us-east-1.pooler.supabase.com:6543/postgres';
-
 const pool = new Pool({
-  connectionString: poolerUrl,
+  connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
   connectionTimeoutMillis: 15000
 });
